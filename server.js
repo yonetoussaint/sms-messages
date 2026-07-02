@@ -19,7 +19,7 @@ const supabase = createClient(
 );
 
 // =====================
-// Security middleware
+// API KEY SECURITY
 // =====================
 function checkApiKey(req, res, next) {
   const apiKey = req.headers["x-api-key"];
@@ -35,20 +35,47 @@ function checkApiKey(req, res, next) {
 }
 
 // =====================
-// Health check route
+// HEALTH CHECK
 // =====================
 app.get("/", (req, res) => {
   res.json({ status: "SMS server running 🚀" });
 });
 
 // =====================
-// SMS endpoint
+// MONCASH SMS PARSER
+// =====================
+function parseMonCash(message) {
+  // amount (numeric only)
+  const amountMatch = message.match(/G(\d+(?:\.\d+)?)/i);
+  const amount = amountMatch ? Number(amountMatch[1]) : null;
+
+  // sender phone
+  const senderPhoneMatch = message.match(/de\s+(\d{8,15})/i);
+  const sender_phone = senderPhoneMatch ? senderPhoneMatch[1] : null;
+
+  // txn id
+  const txnIdMatch = message.match(/Txn ID[:\s]*([0-9]+)/i);
+  const txn_id = txnIdMatch ? txnIdMatch[1] : null;
+
+  // source detection
+  const from = message.toLowerCase().includes("moncash") ? "MonCash" : null;
+
+  return {
+    from,
+    amount,
+    sender_phone,
+    txn_id
+  };
+}
+
+// =====================
+// SMS ENDPOINT
 // =====================
 app.post("/sms", checkApiKey, async (req, res) => {
   try {
     const { sender, message, time } = req.body;
 
-    // Basic validation
+    // validation
     if (!sender || !message) {
       return res.status(400).json({
         success: false,
@@ -56,21 +83,56 @@ app.post("/sms", checkApiKey, async (req, res) => {
       });
     }
 
-    // Build payload
+    // =====================
+    // PARSE SMS
+    // =====================
+    const parsed = parseMonCash(message);
+
+    // =====================
+    // BUILD PAYLOAD
+    // =====================
     const payload = {
       sender: String(sender),
       message: String(message),
+
+      // structured data
+      from: parsed.from,
+      amount: parsed.amount,
+      sender_phone: parsed.sender_phone,
+      txn_id: parsed.txn_id,
+
+      // meta
       time: time || Date.now(),
       received_at: new Date().toISOString(),
       source: "sms-forwarder"
     };
 
-    // Insert into Supabase
+    // =====================
+    // OPTIONAL: DUPLICATE PREVENTION
+    // (important for MonCash systems)
+    // =====================
+    if (parsed.txn_id) {
+      const { data: existing } = await supabase
+        .from("sms_messages")
+        .select("txn_id")
+        .eq("txn_id", parsed.txn_id)
+        .single();
+
+      if (existing) {
+        return res.json({
+          success: true,
+          message: "Duplicate transaction ignored",
+          txn_id: parsed.txn_id
+        });
+      }
+    }
+
+    // =====================
+    // INSERT INTO SUPABASE
+    // =====================
     const { error } = await supabase
       .from("sms_messages")
-      .insert({
-        payload
-      });
+      .insert(payload);
 
     if (error) {
       console.error("Supabase error:", error);
@@ -81,8 +143,10 @@ app.post("/sms", checkApiKey, async (req, res) => {
       });
     }
 
+    // response
     res.json({
-      success: true
+      success: true,
+      parsed
     });
 
   } catch (err) {
@@ -96,7 +160,7 @@ app.post("/sms", checkApiKey, async (req, res) => {
 });
 
 // =====================
-// Start server
+// START SERVER
 // =====================
 const PORT = process.env.PORT || 3000;
 
