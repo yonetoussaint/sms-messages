@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // =====================
-// Supabase client
+// SUPABASE CLIENT
 // =====================
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -19,7 +19,7 @@ const supabase = createClient(
 );
 
 // =====================
-// API KEY SECURITY
+// API KEY MIDDLEWARE
 // =====================
 function checkApiKey(req, res, next) {
   const apiKey = req.headers["x-api-key"];
@@ -42,7 +42,7 @@ app.get("/", (req, res) => {
 });
 
 // =====================
-// MONCASH SMS PARSER
+// MONCASH PARSER
 // =====================
 function parseMonCash(message) {
   // amount (numeric only)
@@ -57,7 +57,7 @@ function parseMonCash(message) {
   const txnIdMatch = message.match(/Txn ID[:\s]*([0-9]+)/i);
   const txn_id = txnIdMatch ? txnIdMatch[1] : null;
 
-  // source detection
+  // source
   const from = message.toLowerCase().includes("moncash") ? "MonCash" : null;
 
   return {
@@ -89,34 +89,32 @@ app.post("/sms", checkApiKey, async (req, res) => {
     const parsed = parseMonCash(message);
 
     // =====================
-    // BUILD PAYLOAD
+    // BUILD PAYLOAD (JSONB)
     // =====================
     const payload = {
       sender: String(sender),
       message: String(message),
 
-      // structured data
       from: parsed.from,
       amount: parsed.amount,
       sender_phone: parsed.sender_phone,
       txn_id: parsed.txn_id,
 
-      // meta
       time: time || Date.now(),
       received_at: new Date().toISOString(),
       source: "sms-forwarder"
     };
 
     // =====================
-    // OPTIONAL: DUPLICATE PREVENTION
-    // (important for MonCash systems)
+    // OPTIONAL DUPLICATE CHECK
+    // (safe wallet protection)
     // =====================
     if (parsed.txn_id) {
       const { data: existing } = await supabase
         .from("sms_messages")
-        .select("txn_id")
-        .eq("txn_id", parsed.txn_id)
-        .single();
+        .select("id")
+        .contains("payload", { txn_id: parsed.txn_id })
+        .maybeSingle();
 
       if (existing) {
         return res.json({
@@ -132,10 +130,12 @@ app.post("/sms", checkApiKey, async (req, res) => {
     // =====================
     const { error } = await supabase
       .from("sms_messages")
-      .insert(payload);
+      .insert({
+        payload
+      });
 
     if (error) {
-      console.error("Supabase error:", error);
+      console.error("Supabase error FULL:", JSON.stringify(error, null, 2));
 
       return res.status(500).json({
         success: false,
