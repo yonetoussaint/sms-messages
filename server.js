@@ -38,7 +38,7 @@ function checkApiKey(req, res, next) {
 // HEALTH CHECK
 // =====================
 app.get("/", (req, res) => {
-  res.json({ status: "SMS server running 🚀" });
+  res.json({ status: "SMS server running ðŸš€" });
 });
 
 // =====================
@@ -71,7 +71,7 @@ function parseMonCash(message) {
 // =====================
 // AUTO-CREDIT: match the parsed sender phone number against
 // registered users in `profiles` and credit their wallet.
-// Runs with the service role key, so it always has write access —
+// Runs with the service role key, so it always has write access â€”
 // nothing in the app needs to be open or clicked for this to happen.
 // =====================
 async function autoCreditMatchingUser(parsed) {
@@ -81,7 +81,7 @@ async function autoCreditMatchingUser(parsed) {
 
   const { data: matchedProfile, error: matchErr } = await supabase
     .from("profiles")
-    .select("user_id")
+    .select("id")
     .or(`moncash_number.eq.${parsed.sender_phone},natcash_number.eq.${parsed.sender_phone}`)
     .maybeSingle();
 
@@ -90,11 +90,11 @@ async function autoCreditMatchingUser(parsed) {
     return null;
   }
   if (!matchedProfile) {
-    console.log(`No profile matches phone ${parsed.sender_phone} — deposit logged but not credited.`);
+    console.log(`No profile matches phone ${parsed.sender_phone} â€” deposit logged but not credited.`);
     return null;
   }
 
-  const userId = matchedProfile.user_id;
+  const userId = matchedProfile.id;
 
   const { data: existingBalance, error: balFetchErr } = await supabase
     .from("wallet_balances")
@@ -123,7 +123,7 @@ async function autoCreditMatchingUser(parsed) {
   const { error: txErr } = await supabase.from("wallet_transactions").insert({
     user_id: userId,
     type: "deposit",
-    label: `Dépôt — ${parsed.from || "Mobile Money"}`,
+    label: `DÃ©pÃ´t â€” ${parsed.from || "Mobile Money"}`,
     amount: parsed.amount,
     method: methodLabel,
     sender_phone: parsed.sender_phone,
@@ -219,7 +219,7 @@ app.post("/sms", checkApiKey, async (req, res) => {
     try {
       creditResult = await autoCreditMatchingUser(parsed);
     } catch (creditErr) {
-      // Never fail the whole request just because crediting failed —
+      // Never fail the whole request just because crediting failed â€”
       // the SMS is already safely logged in sms_messages either way.
       console.error("Auto-credit error:", creditErr);
     }
