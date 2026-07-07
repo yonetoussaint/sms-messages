@@ -148,7 +148,10 @@ async function autoCreditMatchingUser(parsed) {
 
   const { error: balErr } = await supabase
     .from("wallet_balances")
-    .upsert({ user_id: userId, balance: newBalance, updated_at: new Date().toISOString() });
+    .upsert(
+      { user_id: userId, balance: newBalance, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" }
+    );
 
   if (balErr) {
     console.error("Balance update error:", balErr);
