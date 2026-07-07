@@ -79,19 +79,56 @@ async function autoCreditMatchingUser(parsed) {
     return null;
   }
 
-  const { data: matchedProfile, error: matchErr } = await supabase
+  const methodLabel = parsed.from === "Mon Cash" ? "moncash" : "natcash";
+  const numberCol = `${methodLabel}_number`;
+  const verifiedCol = `${methodLabel}_verified`;
+  const verifiedAtCol = `${methodLabel}_verified_at`;
+
+  // Every profile that currently has this number saved — there may be more
+  // than one if multiple people entered the same number before either got
+  // verified by a real deposit.
+  const { data: candidates, error: matchErr } = await supabase
     .from("profiles")
-    .select("id")
-    .or(`moncash_number.eq.${parsed.sender_phone},natcash_number.eq.${parsed.sender_phone}`)
-    .maybeSingle();
+    .select(`id, ${verifiedCol}`)
+    .eq(numberCol, parsed.sender_phone);
 
   if (matchErr) {
     console.error("Profile match error:", matchErr);
     return null;
   }
-  if (!matchedProfile) {
+  if (!candidates || candidates.length === 0) {
     console.log(`No profile matches phone ${parsed.sender_phone} — deposit logged but not credited.`);
     return null;
+  }
+
+  let matchedProfile = candidates.find((c) => c[verifiedCol]);
+
+  if (!matchedProfile) {
+    // Nobody's verified for this number yet. If more than one profile is
+    // claiming it, we can't safely tell who actually owns it — skip
+    // auto-credit rather than risk crediting the wrong person.
+    if (candidates.length > 1) {
+      console.warn(
+        `Multiple unverified profiles claim ${parsed.sender_phone} for ${methodLabel} — skipping auto-credit, needs manual review.`
+      );
+      return null;
+    }
+
+    // Exactly one claimant and a real deposit just came in from that
+    // number — that's proof of ownership. Verify them now.
+    matchedProfile = candidates[0];
+    const { error: verifyErr } = await supabase
+      .from("profiles")
+      .update({ [verifiedCol]: true, [verifiedAtCol]: new Date().toISOString() })
+      .eq("id", matchedProfile.id);
+
+    if (verifyErr) {
+      console.error("Verification update error:", verifyErr);
+      return null;
+    }
+    console.log(
+      `Verified ${methodLabel} number ${parsed.sender_phone} for profile ${matchedProfile.id} via first real deposit.`
+    );
   }
 
   const userId = matchedProfile.id;
@@ -117,8 +154,6 @@ async function autoCreditMatchingUser(parsed) {
     console.error("Balance update error:", balErr);
     return null;
   }
-
-  const methodLabel = parsed.from === "Mon Cash" ? "moncash" : "natcash";
 
   const { error: txErr } = await supabase.from("wallet_transactions").insert({
     user_id: userId,
