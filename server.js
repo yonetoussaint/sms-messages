@@ -69,6 +69,76 @@ function parseMonCash(message) {
 }
 
 // =====================
+// AUTO-CREDIT: match the parsed sender phone number against
+// registered users in `profiles` and credit their wallet.
+// Runs with the service role key, so it always has write access —
+// nothing in the app needs to be open or clicked for this to happen.
+// =====================
+async function autoCreditMatchingUser(parsed) {
+  if (!parsed.sender_phone || !parsed.amount || parsed.amount <= 0) {
+    return null;
+  }
+
+  const { data: matchedProfile, error: matchErr } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .or(`moncash_number.eq.${parsed.sender_phone},natcash_number.eq.${parsed.sender_phone}`)
+    .maybeSingle();
+
+  if (matchErr) {
+    console.error("Profile match error:", matchErr);
+    return null;
+  }
+  if (!matchedProfile) {
+    console.log(`No profile matches phone ${parsed.sender_phone} — deposit logged but not credited.`);
+    return null;
+  }
+
+  const userId = matchedProfile.user_id;
+
+  const { data: existingBalance, error: balFetchErr } = await supabase
+    .from("wallet_balances")
+    .select("balance")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (balFetchErr) {
+    console.error("Balance fetch error:", balFetchErr);
+    return null;
+  }
+
+  const newBalance = (existingBalance?.balance || 0) + parsed.amount;
+
+  const { error: balErr } = await supabase
+    .from("wallet_balances")
+    .upsert({ user_id: userId, balance: newBalance, updated_at: new Date().toISOString() });
+
+  if (balErr) {
+    console.error("Balance update error:", balErr);
+    return null;
+  }
+
+  const methodLabel = parsed.from === "Mon Cash" ? "moncash" : "natcash";
+
+  const { error: txErr } = await supabase.from("wallet_transactions").insert({
+    user_id: userId,
+    type: "deposit",
+    label: `Dépôt — ${parsed.from || "Mobile Money"}`,
+    amount: parsed.amount,
+    method: methodLabel,
+    sender_phone: parsed.sender_phone,
+    txn_id: parsed.txn_id,
+  });
+
+  if (txErr) {
+    console.error("Transaction insert error:", txErr);
+    return null;
+  }
+
+  return { userId, credited: parsed.amount, newBalance };
+}
+
+// =====================
 // SMS ENDPOINT
 // =====================
 app.post("/sms", checkApiKey, async (req, res) => {
@@ -127,11 +197,11 @@ app.post("/sms", checkApiKey, async (req, res) => {
     // =====================
     // INSERT INTO SUPABASE
     // =====================
-    const { error } = await supabase
+    const { data: inserted, error } = await supabase
       .from("sms_messages")
-      .insert({
-        payload
-      });
+      .insert({ payload })
+      .select("id")
+      .maybeSingle();
 
     if (error) {
       console.error("Supabase error FULL:", JSON.stringify(error, null, 2));
@@ -142,10 +212,23 @@ app.post("/sms", checkApiKey, async (req, res) => {
       });
     }
 
+    // =====================
+    // AUTO-CREDIT MATCHING USER
+    // =====================
+    let creditResult = null;
+    try {
+      creditResult = await autoCreditMatchingUser(parsed);
+    } catch (creditErr) {
+      // Never fail the whole request just because crediting failed —
+      // the SMS is already safely logged in sms_messages either way.
+      console.error("Auto-credit error:", creditErr);
+    }
+
     // RESPONSE
     res.json({
       success: true,
-      parsed
+      parsed,
+      creditResult
     });
 
   } catch (err) {
