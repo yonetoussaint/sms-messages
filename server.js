@@ -35,6 +35,26 @@ function checkApiKey(req, res, next) {
 }
 
 // =====================
+// PHONE NORMALIZATION
+// =====================
+// Mobile money numbers are stored in `profiles` as "+509XXXXXXXX". The
+// number parsed out of the SMS body is digits-only (e.g. "50932175344" or
+// just the 8-digit local number, depending on how the sender phrases it).
+// Comparing those two forms directly with a plain `.eq()` never matches,
+// which is why deposits were logged but never credited. Normalizing both
+// sides to the same "+509XXXXXXXX" shape before comparing fixes that —
+// the "+" itself is cosmetic, what matters is both sides agreeing on it.
+function normalizeHaitiPhone(raw) {
+  if (!raw) return raw;
+  let digits = String(raw).replace(/\D/g, "");
+  if (digits.startsWith("509") && digits.length > 8) {
+    digits = digits.slice(3);
+  }
+  if (!digits) return raw;
+  return `+509${digits}`;
+}
+
+// =====================
 // HEALTH CHECK
 // =====================
 app.get("/", (req, res) => {
@@ -84,20 +104,25 @@ async function autoCreditMatchingUser(parsed) {
   const verifiedCol = `${methodLabel}_verified`;
   const verifiedAtCol = `${methodLabel}_verified_at`;
 
+  // Normalize to the same "+509XXXXXXXX" shape the app always saves into
+  // profiles, so the comparison below actually lines up regardless of how
+  // the carrier phrased the number in the SMS.
+  const normalizedSenderPhone = normalizeHaitiPhone(parsed.sender_phone);
+
   // Every profile that currently has this number saved — there may be more
   // than one if multiple people entered the same number before either got
   // verified by a real deposit.
   const { data: candidates, error: matchErr } = await supabase
     .from("profiles")
     .select(`id, ${verifiedCol}`)
-    .eq(numberCol, parsed.sender_phone);
+    .eq(numberCol, normalizedSenderPhone);
 
   if (matchErr) {
     console.error("Profile match error:", matchErr);
     return null;
   }
   if (!candidates || candidates.length === 0) {
-    console.log(`No profile matches phone ${parsed.sender_phone} — deposit logged but not credited.`);
+    console.log(`No profile matches phone ${normalizedSenderPhone} — deposit logged but not credited.`);
     return null;
   }
 
@@ -109,7 +134,7 @@ async function autoCreditMatchingUser(parsed) {
     // auto-credit rather than risk crediting the wrong person.
     if (candidates.length > 1) {
       console.warn(
-        `Multiple unverified profiles claim ${parsed.sender_phone} for ${methodLabel} — skipping auto-credit, needs manual review.`
+        `Multiple unverified profiles claim ${normalizedSenderPhone} for ${methodLabel} — skipping auto-credit, needs manual review.`
       );
       return null;
     }
@@ -127,7 +152,7 @@ async function autoCreditMatchingUser(parsed) {
       return null;
     }
     console.log(
-      `Verified ${methodLabel} number ${parsed.sender_phone} for profile ${matchedProfile.id} via first real deposit.`
+      `Verified ${methodLabel} number ${normalizedSenderPhone} for profile ${matchedProfile.id} via first real deposit.`
     );
   }
 
@@ -164,7 +189,7 @@ async function autoCreditMatchingUser(parsed) {
     label: `Dépôt — ${parsed.from || "Mobile Money"}`,
     amount: parsed.amount,
     method: methodLabel,
-    sender_phone: parsed.sender_phone,
+    sender_phone: normalizedSenderPhone,
     txn_id: parsed.txn_id,
   });
 
