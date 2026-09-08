@@ -10,8 +10,8 @@ if [ -x "$BIN_DIR/gh" ]; then
 fi
 
 echo "Fetching latest gh CLI release info..."
-LATEST_TAG=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
-  | grep -m1 '"tag_name"' \
+RELEASE_JSON=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest)
+LATEST_TAG=$(printf '%s' "$RELEASE_JSON" | grep -m1 '"tag_name"' \
   | sed -E 's/.*"v([^"]+)".*/\1/')
 
 if [ -z "$LATEST_TAG" ]; then
