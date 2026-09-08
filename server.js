@@ -37,6 +37,7 @@ app.get("/api/codespaces", checkAuth, async (req, res) => {
     ]);
     res.json(JSON.parse(stdout));
   } catch (err) {
+    console.error("GET /api/codespaces failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
