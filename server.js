@@ -104,6 +104,7 @@ wss.on("connection", (ws, request) => {
       "-c",
       codespace,
       "--",
+      "-t",
       "tmux",
       "new-session",
       "-A",
