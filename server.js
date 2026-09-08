@@ -90,13 +90,34 @@ wss.on("connection", (ws, request) => {
   // `gh codespace ssh` auto-starts a stopped codespace, then gives an
   // interactive shell. node-pty gives it a real PTY so full-screen /
   // interactive programs (vim, claude, etc.) render correctly.
-  const shell = pty.spawn("gh", ["codespace", "ssh", "-c", codespace], {
-    name: "xterm-256color",
-    cols: 80,
-    rows: 24,
-    cwd: process.cwd(),
-    env: process.env,
-  });
+  //
+  // Running inside tmux on the codespace itself means the actual shell
+  // (and anything running in it, like a `claude` session) survives even
+  // if this WebSocket drops — e.g. a mobile browser backgrounding the
+  // tab. Reconnecting reattaches to the same tmux session instead of
+  // starting fresh.
+  const shell = pty.spawn(
+    "gh",
+    [
+      "codespace",
+      "ssh",
+      "-c",
+      codespace,
+      "--",
+      "tmux",
+      "new-session",
+      "-A",
+      "-s",
+      "gateway-terminal",
+    ],
+    {
+      name: "xterm-256color",
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: process.env,
+    }
+  );
 
   shell.onData((data) => {
     if (ws.readyState === ws.OPEN) ws.send(data);
