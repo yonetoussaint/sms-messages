@@ -10,23 +10,17 @@ const execFileAsync = promisify(execFile);
 
 const app = express();
 app.use(express.json());
-// Set FRONTEND_ORIGIN to your Netlify URL, e.g. https://your-site.netlify.app
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || "*" }));
 
-// Set GATEWAY_AUTH_TOKEN in production. Requests/connections must present it.
 const AUTH_TOKEN = process.env.GATEWAY_AUTH_TOKEN;
 
 function checkAuth(req, res, next) {
-  if (!AUTH_TOKEN) return next(); // no token configured — dev mode only
+  if (!AUTH_TOKEN) return next();
   const header = req.headers.authorization || "";
   if (header === `Bearer ${AUTH_TOKEN}`) return next();
   res.status(401).json({ error: "unauthorized" });
 }
 
-// gh CLI reads GH_TOKEN (or GITHUB_TOKEN) from the environment automatically —
-// set that on this server's process, never send it to the browser.
-
-// List the authenticated user's codespaces.
 app.get("/api/codespaces", checkAuth, async (req, res) => {
   try {
     const { stdout } = await execFileAsync("gh", [
@@ -42,8 +36,6 @@ app.get("/api/codespaces", checkAuth, async (req, res) => {
   }
 });
 
-// Stop a codespace. (There is no "start" command — connecting via ssh
-// below auto-starts a stopped codespace.)
 app.post("/api/codespaces/:name/stop", checkAuth, async (req, res) => {
   try {
     await execFileAsync("gh", ["codespace", "stop", "-c", req.params.name]);
@@ -80,6 +72,7 @@ server.on("upgrade", (request, socket, head) => {
 wss.on("connection", (ws, request) => {
   const url = new URL(request.url, "http://localhost");
   const codespace = url.searchParams.get("codespace");
+  const sessionId = url.searchParams.get("session");
 
   if (!codespace) {
     ws.send("\r\n\x1b[31mNo codespace specified\x1b[0m\r\n");
@@ -87,15 +80,19 @@ wss.on("connection", (ws, request) => {
     return;
   }
 
-  // `gh codespace ssh` auto-starts a stopped codespace, then gives an
-  // interactive shell. node-pty gives it a real PTY so full-screen /
-  // interactive programs (vim, claude, etc.) render correctly.
-  //
-  // Running inside tmux on the codespace itself means the actual shell
-  // (and anything running in it, like a `claude` session) survives even
-  // if this WebSocket drops — e.g. a mobile browser backgrounding the
-  // tab. Reconnecting reattaches to the same tmux session instead of
-  // starting fresh.
+  if (!sessionId) {
+    ws.send("\r\n\x1b[31mNo session specified\x1b[0m\r\n");
+    ws.close();
+    return;
+  }
+
+  // Sanitize: tmux session names can't contain '.' or ':', and this value
+  // comes from a client-controlled query param.
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+  const tmuxSessionName = `gateway-terminal-${safeSessionId}`;
+
+  // Each tab gets its own tmux session on the codespace, so tabs run
+  // fully independent shells instead of mirroring one shared session.
   const shell = pty.spawn(
     "gh",
     [
@@ -109,7 +106,7 @@ wss.on("connection", (ws, request) => {
       "new-session",
       "-A",
       "-s",
-      "gateway-terminal",
+      tmuxSessionName,
     ],
     {
       name: "xterm-256color",
